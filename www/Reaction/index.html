@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Diffusion Reaction Simulation</title>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+        }
+        body, canvas {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+        }
+        #settings-panel {
+          position: absolute;
+          top: 20px;
+          right: 20px;
+          background: rgba(24, 24, 32, 0.92);
+          color: #fff;
+          border-radius: 10px;
+          box-shadow: 0 2px 12px #0008;
+          padding: 18px 22px 14px 22px;
+          z-index: 10;
+          min-width: 220px;
+          font-family: sans-serif;
+          opacity: 0;
+          transition: opacity 0.25s cubic-bezier(.4,1.6,.6,1);
+          pointer-events: none;
+        }
+        #settings-panel:hover, #settings-panel:focus-within {
+          opacity: 1.0;
+          pointer-events: auto;
+        }
+        #settings-panel * {
+          pointer-events: auto;
+        }
+        #settings-panel label {
+          display: block;
+          margin-top: 10px;
+          font-size: 14px;
+        }
+        #settings-panel input[type=range] {
+          width: 140px;
+          margin-left: 10px;
+        }
+        #settings-panel .slider-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          margin-bottom: 6px;
+        }
+        #settings-panel .slider-value {
+          width: 38px;
+          text-align: right;
+          font-size: 13px;
+          color: #b8e0ff;
+        }
+    </style>
+</head>
+<body>
+    <div id="settings-panel">
+      <div class="slider-row">
+        <label for="fill-slider">Fill</label>
+        <input id="fill-slider" type="range" min="0.01" max="0.12" step="0.001" value="0.1">
+        <span class="slider-value" id="fill-value">0.063</span>
+      </div>
+      <div class="slider-row">
+        <label for="kill-slider">Kill</label>
+        <input id="kill-slider" type="range" min="0.01" max="0.09" step="0.001" value="0.05">
+        <span class="slider-value" id="kill-value">0.056</span>
+      </div>
+      <div class="slider-row">
+        <label for="difa-slider">DifA</label>
+        <input id="difa-slider" type="range" min="0.5" max="3.0" step="0.01" value="2.0">
+        <span class="slider-value" id="difa-value">2.08</span>
+      </div>
+      <div class="slider-row">
+        <label for="difb-slider">DifB</label>
+        <input id="difb-slider" type="range" min="0.1" max="1.5" step="0.01" value="0.5">
+        <span class="slider-value" id="difb-value">0.54</span>
+      </div>
+      <div class="slider-row">
+        <label for="time-slider">Time</label>
+        <input id="time-slider" type="range" min="0.01" max="0.5" step="0.01" value="0.1">
+        <span class="slider-value" id="time-value">0.10</span>
+      </div>
+      <div class="slider-row">
+        <label for="evolve-slider">Evolve</label>
+        <input id="evolve-slider" type="range" min="0.0" max="0.1" step="0.001" value="0.02">
+        <span class="slider-value" id="evolve-value">0.02</span>
+      </div>
+    </div>
+    <script type="module" src="main.js"></script>
+    <script>
+      window.addEventListener('DOMContentLoaded', () => {
+        // Settings panel logic
+        const fillSlider = document.getElementById('fill-slider');
+        const killSlider = document.getElementById('kill-slider');
+        const difaSlider = document.getElementById('difa-slider');
+        const difbSlider = document.getElementById('difb-slider');
+        const timeSlider = document.getElementById('time-slider');
+        const evolveSlider = document.getElementById('evolve-slider');
+        const fillValue = document.getElementById('fill-value');
+        const killValue = document.getElementById('kill-value');
+        const difaValue = document.getElementById('difa-value');
+        const difbValue = document.getElementById('difb-value');
+        const timeValue = document.getElementById('time-value');
+        const evolveValue = document.getElementById('evolve-value');
+
+        function updateSliderValue(slider, valueElem, digits) {
+          valueElem.textContent = Number(slider.value).toFixed(digits);
+        }
+        updateSliderValue(fillSlider, fillValue, 2);
+        updateSliderValue(killSlider, killValue, 2);
+        updateSliderValue(difaSlider, difaValue, 2);
+        updateSliderValue(difbSlider, difbValue, 2);
+        updateSliderValue(timeSlider, timeValue, 2);
+        updateSliderValue(evolveSlider, evolveValue, 2);
+
+        fillSlider.addEventListener('input', () => updateSliderValue(fillSlider, fillValue, 2));
+        killSlider.addEventListener('input', () => updateSliderValue(killSlider, killValue, 2));
+        difaSlider.addEventListener('input', () => updateSliderValue(difaSlider, difaValue, 2));
+        difbSlider.addEventListener('input', () => updateSliderValue(difbSlider, difbValue, 2));
+        timeSlider.addEventListener('input', () => updateSliderValue(timeSlider, timeValue, 2));
+        evolveSlider.addEventListener('input', () => updateSliderValue(evolveSlider, evolveValue, 2));
+
+        // --- URL sync helpers ---
+        function updateUrlFromSliders() {
+          const params = new URLSearchParams(window.location.search);
+          params.set('f', fillSlider.value);
+          params.set('k', killSlider.value);
+          params.set('da', difaSlider.value);
+          params.set('db', difbSlider.value);
+          params.set('t', timeSlider.value);
+          params.set('evolve', evolveSlider.value);
+          const newUrl = window.location.pathname + '?' + params.toString();
+          window.history.replaceState({}, '', newUrl);
+        }
+
+        function setSlidersFromUrl() {
+          const params = new URLSearchParams(window.location.search);
+          if (params.has('f')) fillSlider.value = params.get('f');
+          if (params.has('k')) killSlider.value = params.get('k');
+          if (params.has('da')) difaSlider.value = params.get('da');
+          if (params.has('db')) difbSlider.value = params.get('db');
+          if (params.has('t')) timeSlider.value = params.get('t');
+          if (params.has('evolve')) evolveSlider.value = params.get('evolve');
+          updateSliderValue(fillSlider, fillValue, 2);
+          updateSliderValue(killSlider, killValue, 2);
+          updateSliderValue(difaSlider, difaValue, 2);
+          updateSliderValue(difbSlider, difbValue, 2);
+          updateSliderValue(timeSlider, timeValue, 2);
+          updateSliderValue(evolveSlider, evolveValue, 2);
+        }
+
+        // Set sliders from URL on load
+        setSlidersFromUrl();
+
+        // Update URL when sliders change
+        fillSlider.addEventListener('input', updateUrlFromSliders);
+        killSlider.addEventListener('input', updateUrlFromSliders);
+        difaSlider.addEventListener('input', updateUrlFromSliders);
+        difbSlider.addEventListener('input', updateUrlFromSliders);
+        timeSlider.addEventListener('input', updateUrlFromSliders);
+        evolveSlider.addEventListener('input', updateUrlFromSliders);
+
+        // Expose to simulation.js
+        window.grayScottParams = {
+          get f() { return parseFloat(fillSlider.value); },
+          get k() { return parseFloat(killSlider.value); },
+          get da() { return parseFloat(difaSlider.value); },
+          get db() { return parseFloat(difbSlider.value); },
+          get t() { return parseFloat(timeSlider.value); },
+          get evolve() { return parseFloat(evolveSlider.value); }
+        };
+      });
+    </script>
+</body>
+</html>
