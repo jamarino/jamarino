@@ -1,6 +1,8 @@
 // erosionSim.js
 // Core logic for Erosion Simulation using WebGL2
 
+import { makeNoise2D } from "./simplex/2d.js";
+
 export class ErosionSim {
     constructor(canvas) {
         this.canvas = canvas;
@@ -195,33 +197,59 @@ export class ErosionSim {
         gl.bindTexture(gl.TEXTURE_2D, this.terrainTexture);
         // Generate a simple combination of sine functions for terrain
         const size = 1024;
-        const data = new Float32Array(size * size);
-        
-        const x_frequencies = Array.from({ length: 5 }, () => Math.random() * 10).sort((a, b) => a - b);
-        const y_frequencies = Array.from({ length: 5 }, () => Math.random() * 10).sort((a, b) => a - b);
-        
-        const weights = [0.3, 0.2, 0.25, 0.15, 0.1];
-        
-        const x_phases = Array.from({ length: 5 }, () => Math.random() * 2 * Math.PI);
-        const y_phases = Array.from({ length: 5 }, () => Math.random() * 2 * Math.PI);
-        
-        for (let y = 0; y < size; ++y) {
-            for (let x = 0; x < size; ++x) {
-                const fx = x / size;
-                const fy = y / size;
-                let n = 0;
-                for (let i = 0; i < x_frequencies.length; ++i) {
-                    n += weights[i]
-                        * Math.sin(x_frequencies[i] * Math.PI * fx + x_phases[i])
-                        * Math.sin(y_frequencies[i] * Math.PI * fy + y_phases[i]);
-                }
-                // Normalize and clamp to [0,1]
-                n = n * 0.5 + 0.5;
-                n = Math.max(0, Math.min(1, n));
-                data[y * size + x] = n;
-            }
+        let front = new Float32Array(size * size);
+        let back = new Float32Array(size * size);
+
+        // add octaves of simplex noise
+        const gradientFactor = 0.8;
+        const scaleFactor = .5;
+        const simplex = makeNoise2D(123);
+        let octaves = [
+            { scale: scaleFactor * 1.0 / 64,  weight: 0.5,  xoff: Math.random() * 1000, yoff: Math.random() * 1000 },
+            { scale: scaleFactor * 1.0 / 32,  weight: 0.25, xoff: Math.random() * 1000, yoff: Math.random() * 1000 },
+            { scale: scaleFactor * 1.0 / 16,  weight: 0.15, xoff: Math.random() * 1000, yoff: Math.random() * 1000 },
+            { scale: scaleFactor * 1.0 / 8,   weight: 0.07, xoff: Math.random() * 1000, yoff: Math.random() * 1000 },
+            { scale: scaleFactor * 1.0 / 4,   weight: 0.03, xoff: Math.random() * 1000, yoff: Math.random() * 1000 }
+        ];
+
+        // remove random offsets for debugging
+        for (let octave of octaves) {
+            octave.xoff = 0;
+            octave.yoff = 0;
         }
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, size, size, 0, gl.RED, gl.FLOAT, data);
+
+        for (let octave of octaves) {
+            for (let y = 0; y < size; ++y) {
+                for (let x = 0; x < size; ++x) {
+                    // sample front buffer to determine gradient
+                    let height = front[y * size + x];
+                    let dx = 0, dy = 0;
+                    if (x > 0) dx = height - front[y * size + (x - 1)];
+                    if (y > 0) dy = height - front[(y - 1) * size + x];
+
+                    
+                    const fx = (x + octave.xoff) * octave.scale;
+                    const fy = (y + octave.yoff) * octave.scale;
+                    let n = simplex(fx, fy);
+                    let nx = simplex(fx-1, fy);
+                    let ny = simplex(fx, fy-1);
+                    
+                    dx += (n - nx);
+                    dy += (n - ny);
+                    let gradient = Math.sqrt(dx * dx + dy * dy);
+
+                    n = (n + 1) / 2.0; // Normalize to [0,1]
+                    n = n / (1.0 + (gradientFactor * gradient)); // Scale by gradient factor
+                    back[y * size + x] = height + n * octave.weight;
+                }
+            }
+
+            // Swap buffers for next octave
+            [front, back] = [back, front];
+        }
+
+
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, size, size, 0, gl.RED, gl.FLOAT, back);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
