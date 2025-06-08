@@ -136,7 +136,7 @@ export class ErosionSim {
                 uv.x = (uv.x - 0.5) * scale + 0.5;
             }
             float h = texture(u_heightmap, uv).r;
-            outColor = vec4(vec3(h), 1.0);
+            outColor = vec4(vec3(h/2.0), 1.0);
         }`;
         const vs = this.compileShader(gl.VERTEX_SHADER, vsSource);
         const fs = this.compileShader(gl.FRAGMENT_SHADER, fsSource);
@@ -201,25 +201,37 @@ export class ErosionSim {
         let back = new Float32Array(size * size);
 
         // add octaves of simplex noise
-        const gradientFactor = 0.8;
-        const scaleFactor = .5;
+        const gradientFactor = 80;
+        const scaleFactor = 1;
         const simplex = makeNoise2D(123);
         let octaves = [
-            { scale: scaleFactor * 1.0 / 64,  weight: 0.5,  xoff: Math.random() * 1000, yoff: Math.random() * 1000 },
-            { scale: scaleFactor * 1.0 / 32,  weight: 0.25, xoff: Math.random() * 1000, yoff: Math.random() * 1000 },
-            { scale: scaleFactor * 1.0 / 16,  weight: 0.15, xoff: Math.random() * 1000, yoff: Math.random() * 1000 },
-            { scale: scaleFactor * 1.0 / 8,   weight: 0.07, xoff: Math.random() * 1000, yoff: Math.random() * 1000 },
-            { scale: scaleFactor * 1.0 / 4,   weight: 0.03, xoff: Math.random() * 1000, yoff: Math.random() * 1000 }
+            { scale: scaleFactor * 1.0 / 256,  weight:    1, xoff: Math.random() * 1000, yoff: Math.random() * 1000 },
+            { scale: scaleFactor * 1.0 / 128,  weight:  0.4, xoff: Math.random() * 1000, yoff: Math.random() * 1000 },
+            { scale: scaleFactor * 1.0 / 32,   weight: 0.10, xoff: Math.random() * 1000, yoff: Math.random() * 1000 },
+            { scale: scaleFactor * 1.0 / 16,   weight: 0.05, xoff: Math.random() * 1000, yoff: Math.random() * 1000 },
+            { scale: scaleFactor * 1.0 / 2,    weight: 0.03, xoff: Math.random() * 1000, yoff: Math.random() * 1000 }
         ];
 
         // remove random offsets for debugging
-        for (let octave of octaves) {
-            octave.xoff = 0;
-            octave.yoff = 0;
-        }
+        // for (let octave of octaves) {
+        //     octave.xoff = 0;
+        //     octave.yoff = 0;
+        // }
+
+        let simplexLine = new Float32Array(size + 1);
+        let simplexPrevLine = new Float32Array(size + 1);
 
         for (let octave of octaves) {
             for (let y = 0; y < size; ++y) {
+
+                let fy = (y + octave.yoff) * octave.scale;
+                for (let x = -1; x < size; ++x) { 
+                    // fill simplex line with noise values
+                    let fx = (x + octave.xoff) * octave.scale;
+                    let n = simplex(fx, fy);
+                    simplexLine[x+1] = (n + 1) / 2.0; // Normalize to [0,1]
+                }
+
                 for (let x = 0; x < size; ++x) {
                     // sample front buffer to determine gradient
                     let height = front[y * size + x];
@@ -227,29 +239,29 @@ export class ErosionSim {
                     if (x > 0) dx = height - front[y * size + (x - 1)];
                     if (y > 0) dy = height - front[(y - 1) * size + x];
 
-                    
-                    const fx = (x + octave.xoff) * octave.scale;
-                    const fy = (y + octave.yoff) * octave.scale;
-                    let n = simplex(fx, fy);
-                    let nx = simplex(fx-1, fy);
-                    let ny = simplex(fx, fy-1);
-                    
-                    dx += (n - nx);
-                    dy += (n - ny);
+                    let n = simplexLine[x]; // offet by 1 since cache starts at -1
+                    let nx = simplexLine[x-1];
+                    let ny = simplexPrevLine[x];
+
+                    dx += octave.weight * (n - nx);
+                    dy += octave.weight * (n - ny);
                     let gradient = Math.sqrt(dx * dx + dy * dy);
 
-                    n = (n + 1) / 2.0; // Normalize to [0,1]
+                    // n = (n + 1) / 2.0; // Normalize to [0,1]
                     n = n / (1.0 + (gradientFactor * gradient)); // Scale by gradient factor
                     back[y * size + x] = height + n * octave.weight;
                 }
+
+                // Swap lines for next iteration
+                [simplexPrevLine, simplexLine] = [simplexLine, simplexPrevLine];
             }
 
             // Swap buffers for next octave
             [front, back] = [back, front];
         }
 
-
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, size, size, 0, gl.RED, gl.FLOAT, back);
+        // Ensure the final terrain data is in 'front' after all octaves
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, size, size, 0, gl.RED, gl.FLOAT, front);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
