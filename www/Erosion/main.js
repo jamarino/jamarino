@@ -4,11 +4,11 @@
 const canvas = document.getElementById('glcanvas');
 let sim = null;
 
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('DOMContentLoaded', async () => {
     // Dynamically load ErosionSim after DOM is ready
-    import('./erosionSim.js').then(module => {
-        const ErosionSim = module.ErosionSim;
-        sim = new ErosionSim(canvas);
-        sim.start();
-    });
+    const module = await import('./erosionSim.js');
+    const ErosionSim = module.ErosionSim;
+    sim = new ErosionSim(canvas);
+    await sim.init();
+    sim.start();
 });

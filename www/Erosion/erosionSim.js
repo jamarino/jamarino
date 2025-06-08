@@ -3,6 +3,25 @@
 
 import { makeNoise2D } from "./simplex/2d.js";
 
+// Helper to load shader source from a file (returns a Promise)
+async function loadShaderSource(url) {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Failed to load shader: ${url}`);
+    return await response.text();
+}
+
+// Helper to create and compile a shader from file
+async function createShaderFromFile(gl, type, url) {
+    const source = await loadShaderSource(url);
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        throw new Error('Shader compile error: ' + gl.getShaderInfoLog(shader));
+    }
+    return shader;
+}
+
 export class ErosionSim {
     constructor(canvas) {
         this.canvas = canvas;
@@ -14,7 +33,6 @@ export class ErosionSim {
         // Bind resize handler
         window.addEventListener('resize', () => this.handleResize());
         this.handleResize();
-        this.init();
     }
 
     handleResize() {
@@ -31,18 +49,13 @@ export class ErosionSim {
         }
     }
 
-    init() {
+    async init() {
         // Create display buffer (framebuffer + texture) matching canvas size
         this.createDisplayBuffer();
         // Create terrain texture (1024x1024, float32)
         this.createTerrainTexture();
-        this.reset();
-    }
-
-    reset() {
-        // TODO: Generate random terrain heightmap
-        // TODO: Reset simulation state
-        this.draw();
+        await this.createTerrainProgram();
+        this.terrainQuad = this.createFullscreenQuad();
     }
 
     start() {
@@ -64,11 +77,6 @@ export class ErosionSim {
         gl.viewport(0, 0, this.canvas.width, this.canvas.height);
         gl.clearColor(0.2, 0.2, 0.3, 1.0);
         gl.clear(gl.COLOR_BUFFER_BIT);
-
-        if (!this.terrainProgram) {
-            this.terrainProgram = this.createTerrainProgram();
-            this.terrainQuad = this.createFullscreenQuad();
-        }
 
         gl.useProgram(this.terrainProgram.program);
         gl.activeTexture(gl.TEXTURE0);
@@ -106,40 +114,11 @@ export class ErosionSim {
         return { vao, vbo };
     }
 
-    createTerrainProgram() {
+    async createTerrainProgram() {
         const gl = this.gl;
-        // Vertex shader: pass through
-        const vsSource = `#version 300 es
-        layout(location=0) in vec2 a_pos;
-        out vec2 v_uv;
-        void main() {
-            v_uv = (a_pos + 1.0) * 0.5;
-            gl_Position = vec4(a_pos, 0, 1);
-        }`;
-        // Fragment shader: sample heightmap, output grayscale
-        const fsSource = `#version 300 es
-        precision highp float;
-        in vec2 v_uv;
-        out vec4 outColor;
-        uniform sampler2D u_heightmap;
-        uniform vec2 u_texSize;
-        uniform vec2 u_canvasSize;
-        void main() {
-            float texAspect = u_texSize.x / u_texSize.y;
-            float canvasAspect = u_canvasSize.x / u_canvasSize.y;
-            vec2 uv = v_uv;
-            if (canvasAspect > texAspect) {
-                float scale = texAspect / canvasAspect;
-                uv.y = (uv.y - 0.5) * scale + 0.5;
-            } else {
-                float scale = canvasAspect / texAspect;
-                uv.x = (uv.x - 0.5) * scale + 0.5;
-            }
-            float h = texture(u_heightmap, uv).r;
-            outColor = vec4(vec3(h/2.0), 1.0);
-        }`;
-        const vs = this.compileShader(gl.VERTEX_SHADER, vsSource);
-        const fs = this.compileShader(gl.FRAGMENT_SHADER, fsSource);
+        // Load shaders from external files
+        const vs = await createShaderFromFile(gl, gl.VERTEX_SHADER, 'shader/terrain.vert');
+        const fs = await createShaderFromFile(gl, gl.FRAGMENT_SHADER, 'shader/terrain.frag');
         const program = gl.createProgram();
         gl.attachShader(program, vs);
         gl.attachShader(program, fs);
@@ -149,7 +128,7 @@ export class ErosionSim {
         }
         gl.deleteShader(vs);
         gl.deleteShader(fs);
-        return {
+        this.terrainProgram = {
             program,
             uniforms: {
                 u_heightmap: gl.getUniformLocation(program, 'u_heightmap'),
@@ -211,12 +190,6 @@ export class ErosionSim {
             { scale: scaleFactor * 1.0 / 16,   weight: 0.05, xoff: Math.random() * 1000, yoff: Math.random() * 1000 },
             { scale: scaleFactor * 1.0 / 2,    weight: 0.03, xoff: Math.random() * 1000, yoff: Math.random() * 1000 }
         ];
-
-        // remove random offsets for debugging
-        // for (let octave of octaves) {
-        //     octave.xoff = 0;
-        //     octave.yoff = 0;
-        // }
 
         let simplexLine = new Float32Array(size + 1);
         let simplexPrevLine = new Float32Array(size + 1);
