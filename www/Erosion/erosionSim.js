@@ -30,6 +30,11 @@ export class ErosionSim {
             alert('WebGL2 not supported!');
             return;
         }
+        const ext = this.gl.getExtension('EXT_color_buffer_float');
+        if (!ext) {
+            alert('EXT_color_buffer_float not supported!');
+            return;
+        }
         // Bind resize handler
         window.addEventListener('resize', () => this.handleResize());
         this.handleResize();
@@ -52,23 +57,49 @@ export class ErosionSim {
     async init() {
         // Create display buffer (framebuffer + texture) matching canvas size
         this.createDisplayBuffer();
-        // Create terrain texture (1024x1024, float32)
-        this.createTerrainTexture();
+        // Create simulation textures (front/back) for ping-pong
+        this.createSimulationTextures();
+        this.initSimulationTextures();
         await this.createTerrainProgram();
-        this.terrainQuad = this.createFullscreenQuad();
+        await this.createDisplayProgram();
+        this.createFullscreenQuad();
     }
 
     start() {
-        // TODO: Start simulation loop
         this.running = true;
         this.loop();
     }
 
     loop() {
         if (!this.running) return;
-        // TODO: Perform erosion step
+        this.simulate();
         this.draw();
         requestAnimationFrame(() => this.loop());
+    }
+
+    simulate() {
+        const gl = this.gl;
+        // Use ping-pong technique for simulation
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.simFrontFBO);
+        gl.viewport(0, 0, 1024, 1024);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+
+        gl.useProgram(this.terrainProgram.program);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, this.simBack);
+        gl.uniform1i(this.terrainProgram.uniforms.u_heightmap, 0);
+        // gl.uniform2f(this.terrainProgram.uniforms.u_texSize, 1024.0, 1024.0);
+
+        // Draw fullscreen quad to simulate terrain
+        gl.bindVertexArray(this.terrainQuad.vao);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        gl.bindVertexArray(null);
+
+        // Swap both textures and framebuffers for next iteration
+        [this.simFront, this.simBack] = [this.simBack, this.simFront];
+        [this.simFrontFBO, this.simBackFBO] = [this.simBackFBO, this.simFrontFBO];
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     }
 
     draw() {
@@ -78,12 +109,12 @@ export class ErosionSim {
         gl.clearColor(0.2, 0.2, 0.3, 1.0);
         gl.clear(gl.COLOR_BUFFER_BIT);
 
-        gl.useProgram(this.terrainProgram.program);
+        gl.useProgram(this.displayProgram.program);
         gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, this.terrainTexture);
-        gl.uniform1i(this.terrainProgram.uniforms.u_heightmap, 0);
-        gl.uniform2f(this.terrainProgram.uniforms.u_texSize, 1024.0, 1024.0);
-        gl.uniform2f(this.terrainProgram.uniforms.u_canvasSize, this.canvas.width * 1.0, this.canvas.height * 1.0);
+        gl.bindTexture(gl.TEXTURE_2D, this.simFront);
+        gl.uniform1i(this.displayProgram.uniforms.u_heightmap, 0);
+        gl.uniform2f(this.displayProgram.uniforms.u_texSize, 1024.0, 1024.0);
+        gl.uniform2f(this.displayProgram.uniforms.u_canvasSize, this.canvas.width * 1.0, this.canvas.height * 1.0);
 
         gl.bindVertexArray(this.terrainQuad.vao);
         // Fix: Use gl.drawArrays with correct vertex count and unbind VAO after
@@ -111,7 +142,7 @@ export class ErosionSim {
         gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
         gl.bindBuffer(gl.ARRAY_BUFFER, null); // Unbind buffer after setup
         gl.bindVertexArray(null);
-        return { vao, vbo };
+        this.terrainQuad = { vao, vbo };
     }
 
     async createTerrainProgram() {
@@ -129,6 +160,30 @@ export class ErosionSim {
         gl.deleteShader(vs);
         gl.deleteShader(fs);
         this.terrainProgram = {
+            program,
+            uniforms: {
+                u_heightmap: gl.getUniformLocation(program, 'u_heightmap'),
+                u_texSize: gl.getUniformLocation(program, 'u_texSize'),
+                u_canvasSize: gl.getUniformLocation(program, 'u_canvasSize'),
+            }
+        };
+    }
+
+    async createDisplayProgram() {
+        const gl = this.gl;
+        // Load shaders from external files
+        const vs = await createShaderFromFile(gl, gl.VERTEX_SHADER, 'shader/display.vert');
+        const fs = await createShaderFromFile(gl, gl.FRAGMENT_SHADER, 'shader/display.frag');
+        const program = gl.createProgram();
+        gl.attachShader(program, vs);
+        gl.attachShader(program, fs);
+        gl.linkProgram(program);
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+            throw new Error('Shader link error: ' + gl.getProgramInfoLog(program));
+        }
+        gl.deleteShader(vs);
+        gl.deleteShader(fs);
+        this.displayProgram = {
             program,
             uniforms: {
                 u_heightmap: gl.getUniformLocation(program, 'u_heightmap'),
@@ -167,13 +222,46 @@ export class ErosionSim {
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     }
 
-    createTerrainTexture() {
+    createSimulationTextures() {
         const gl = this.gl;
+        const size = 1024;
         // Release previous if any
-        if (this.terrainTexture) gl.deleteTexture(this.terrainTexture);
-        // Create 1024x1024 float32 texture for terrain heightmap
-        this.terrainTexture = gl.createTexture();
-        gl.bindTexture(gl.TEXTURE_2D, this.terrainTexture);
+        if (this.simFront) gl.deleteTexture(this.simFront);
+        if (this.simBack) gl.deleteTexture(this.simBack);
+        if (this.simFrontFBO) gl.deleteFramebuffer(this.simFrontFBO);
+        if (this.simBackFBO) gl.deleteFramebuffer(this.simBackFBO);
+        // Create two float32 RGBA textures for simulation
+        this.simFront = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, this.simFront);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, size, size, 0, gl.RGBA, gl.FLOAT, null);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+        this.simBack = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, this.simBack);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, size, size, 0, gl.RGBA, gl.FLOAT, null);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+
+        // Create framebuffers for ping-pong
+        this.simFrontFBO = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.simFrontFBO);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.simFront, 0);
+
+        this.simBackFBO = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.simBackFBO);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.simBack, 0);
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
+
+    initSimulationTextures() {
+        
         // Generate a simple combination of sine functions for terrain
         const size = 1024;
         let front = new Float32Array(size * size);
@@ -196,7 +284,6 @@ export class ErosionSim {
 
         for (let octave of octaves) {
             for (let y = 0; y < size; ++y) {
-
                 let fy = (y + octave.yoff) * octave.scale;
                 for (let x = -1; x < size; ++x) { 
                     // fill simplex line with noise values
@@ -219,9 +306,7 @@ export class ErosionSim {
                     dx += octave.weight * (n - nx);
                     dy += octave.weight * (n - ny);
                     let gradient = Math.sqrt(dx * dx + dy * dy);
-
-                    // n = (n + 1) / 2.0; // Normalize to [0,1]
-                    n = n / (1.0 + (gradientFactor * gradient)); // Scale by gradient factor
+                    n = n / (1.0 + (gradientFactor * gradient));
                     back[y * size + x] = height + n * octave.weight;
                 }
 
@@ -233,8 +318,26 @@ export class ErosionSim {
             [front, back] = [back, front];
         }
 
-        // Ensure the final terrain data is in 'front' after all octaves
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, size, size, 0, gl.RED, gl.FLOAT, front);
+        // copy noise into all RGBA channels (avoid uninitialized values)
+        var rgba = new Float32Array(size * size * 4);
+        for (let i = 0; i < size * size; ++i) {
+            rgba[i * 4 + 0] = front[i]; // R (height)
+            rgba[i * 4 + 1] = 0.0;      // G
+            rgba[i * 4 + 2] = 0.0;      // B
+            rgba[i * 4 + 3] = 1.0;      // A (safe default)
+        }
+
+        const gl = this.gl;
+        gl.bindTexture(gl.TEXTURE_2D, this.simFront);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, size, size, 0, gl.RGBA, gl.FLOAT, rgba);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+        // Also initialize simBack to avoid uninitialized reads
+        gl.bindTexture(gl.TEXTURE_2D, this.simBack);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, size, size, 0, gl.RGBA, gl.FLOAT, rgba);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
