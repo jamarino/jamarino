@@ -319,9 +319,11 @@ export class ErosionSim {
         }
 
         // copy noise into all RGBA channels (avoid uninitialized values)
+        const heightFactor = 500.0; // scale terrain height to realistic values
+        const heightOffset = -200.0; // offset to avoid negative heights
         var rgba = new Float32Array(size * size * 4);
         for (let i = 0; i < size * size; ++i) {
-            rgba[i * 4 + 0] = front[i]; // R (height)
+            rgba[i * 4 + 0] = heightFactor * front[i] + heightOffset; // R (height)
             rgba[i * 4 + 1] = 0.0;      // G
             rgba[i * 4 + 2] = 0.0;      // B
             rgba[i * 4 + 3] = 1.0;      // A (safe default)
